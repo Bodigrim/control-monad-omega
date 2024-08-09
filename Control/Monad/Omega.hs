@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE BangPatterns #-}
 ----------------------------------------------
 -- |
 -- Module    : Control.Monad.Omega
@@ -47,22 +48,31 @@ import qualified Data.Foldable as Foldable
 import qualified Data.Traversable as Traversable
 
 import qualified Control.Monad.Fail as Fail
+import Data.List (transpose, uncons)
+import Data.Maybe (mapMaybe)
 
 -- | This is the hinge algorithm of the Omega monad,
 -- exposed because it can be useful on its own.  Joins 
 -- a list of lists with the property that for every i j 
 -- there is an n such that @xs !! i !! j == diagonal xs !! n@.
--- In particular, @n <= (i+j)*(i+j+1)/2 + j@.
+-- In particular, @n <= (max(i, j) + 1) ^ 2@.
 diagonal :: [[a]] -> [a]
-diagonal = concat . stripe
+diagonal xss = concat $ go 0 [] xss
     where
-    stripe [] = []
-    stripe ([]:xss) = stripe xss
-    stripe ((x:xs):xss) = [x] : zipCons xs (stripe xss)
+        go :: Int -> [[a]] -> [[a]] -> [[a]]
+        go !_ yss [] = transpose yss
+        go n yss (zs : zss) = us : hs : go (n + 1) tss zss
+            where
+                (us, vs) = splitAtReversed n zs
+                (hs, tss) = unzip $ mapMaybe uncons $ vs : yss
 
-    zipCons [] ys = ys
-    zipCons xs [] = map (:[]) xs
-    zipCons (x:xs) (y:ys) = (x:y) : zipCons xs ys
+splitAtReversed :: Int -> [a] -> ([a], [a])
+splitAtReversed = go []
+    where
+        go acc n xs
+            | n <= 0 = (acc, xs)
+        go acc _ [] = (acc, [])
+        go acc n (x : xs) = go (x : acc) (n - 1) xs
 
 newtype Omega a = Omega { runOmega :: [a] }
 
@@ -89,7 +99,16 @@ instance Monad.MonadPlus Omega where
 
 instance Applicative.Applicative Omega where
     pure = Omega . (:[])
-    (<*>) = Monad.ap
+    liftA2 f (Omega as) (Omega bs) = Omega $ concat $ go [] [] as bs
+        where
+            go initXs initYs (x : xs) (y : ys) =
+                map (`f` y) initXs : (f x y : map (f x) initYs) :
+                    go (x : initXs) (y : initYs) xs ys
+            go initXs initYs [] (y : ys) =
+                map (`f` y) initXs : go initXs (y : initYs) [] ys
+            go initXs initYs (x : xs) [] =
+                map (f x) initYs : go (x : initXs) initYs xs []
+            go _ _ [] [] = []
 
 instance Applicative.Alternative Omega where
     empty = Omega []
